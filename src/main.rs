@@ -6,15 +6,19 @@ use std::io::prelude::*;
 use std::path::Path;
 use rand::prelude::*;
 use na::{Vector3, Rotation3};
+use std::process::exit;
 
+#[derive(Copy, Clone)]
 enum MaterialType {
     LAMBERTIAN,
     METAL
 }
 
+#[derive(Copy, Clone)]
 struct Material {
     t: MaterialType,
-    albedo: Vector3<f32>
+    albedo: Vector3<f32>,
+    fuzz: f32
 }
 
 struct Ray {
@@ -66,20 +70,22 @@ impl Sphere {
 
         let discriminant: f32 = b * b - a * c;
 
-        if (discriminant > 0.0) {
+        if discriminant > 0.0 {
             let mut temp: f32 = (-b - discriminant.sqrt()) / a;
 
-            if (temp < t_max && temp > t_min) {
+            if temp < t_max && temp > t_min {
                 rec.t = temp;
                 rec.p = r.point_at_parameter(rec.t);
                 rec.normal = (rec.p - self.center) / self.radius;
+                rec.mat = self.mat;
                 return true;
             }
             temp = (-b + discriminant.sqrt()) / a;
-            if (temp < t_max && temp > t_min) {
+            if temp < t_max && temp > t_min {
                 rec.t = temp;
                 rec.p = r.point_at_parameter(rec.t);
                 rec.normal = (rec.p - self.center) / self.radius;
+                rec.mat = self.mat;
                 return true;
             }
         }
@@ -99,7 +105,6 @@ fn reflect(v: &Vector3<f32>, n: &Vector3<f32>) -> Vector3<f32> {
 
 impl Material {
     fn scatter(&self, r: &Ray, rec: &HitRecord) -> (bool, Vector3<f32>, Ray) {
-        let cond: bool = false;
         let attenuation: Vector3<f32> = self.albedo;
         let mut scattered: Ray = Ray {a: rec.p, b: Vector3::new(0.0, 0.0, 0.0)};
 
@@ -112,9 +117,10 @@ impl Material {
             },
             MaterialType::METAL => {
                 let norm = na::normalize(r.direction());
-                scattered.b = reflect(&norm, &rec.normal);
+                let reflected = reflect(&norm, &rec.normal);
+                scattered.b = reflected + self.fuzz * random_in_unit_sphere();
 
-                return ((na::dot(scattered.direction(), &rec.normal) > 0.0), self.albedo, scattered);
+                return ((na::dot(scattered.direction(), &rec.normal) > 0.0), attenuation, scattered);
             }
         }
         return (false, Vector3::new(0.0, 0.0, 0.0), Ray{a: Vector3::new(0.0, 0.0, 0.0), b: Vector3::new(0.0, 0.0, 0.0)});
@@ -128,7 +134,8 @@ fn hit(r: &Ray, t_min: f32, t_max: f32, mut rec: &mut HitRecord, world: &Vec<Sph
         normal: Vector3::new(0.0, 0.0, 0.0),
         mat: Material {
             t: MaterialType::LAMBERTIAN,
-            albedo: Vector3::new(0.0, 0.0, 0.0)
+            albedo: Vector3::new(0.0, 0.0, 0.0),
+            fuzz: 0.0
         }
     };
 
@@ -136,13 +143,14 @@ fn hit(r: &Ray, t_min: f32, t_max: f32, mut rec: &mut HitRecord, world: &Vec<Sph
     let mut closest_so_far: f64 = t_max as f64;
 
     for i in 0 .. world.len() {
-        if (world[i].hit(&r, t_min, closest_so_far as f32, &mut temp_rec)) {
+        if world[i].hit(&r, t_min, closest_so_far as f32, &mut temp_rec) {
             hit_anything = true;
             closest_so_far = temp_rec.t as f64;
 
             rec.normal = temp_rec.normal;
             rec.t = temp_rec.t;
             rec.p = temp_rec.p;
+            rec.mat = temp_rec.mat;
         }
     }
 
@@ -166,20 +174,28 @@ fn random_in_unit_sphere() -> Vector3<f32> {
     return p;
 }
 
-fn color(r: Ray, world: &Vec<Sphere>) -> Vector3<f32> {
+fn color(r: Ray, world: &Vec<Sphere>, depth: i32) -> Vector3<f32> {
     let mut rec: HitRecord = HitRecord {
         t: 0.0,
         p: Vector3::new(0.0, 0.0, 0.0),
         normal: Vector3::new(0.0, 0.0, 0.0),
         mat: Material {
             t: MaterialType::LAMBERTIAN,
-            albedo: Vector3::new(0.0, 0.0, 0.0)
+            albedo: Vector3::new(0.0, 0.0, 0.0),
+            fuzz: 0.0
         }
     };
 
     if hit(&r, 0.001, std::f32::MAX, &mut rec, world) {
-        let target = rec.p + rec.normal + random_in_unit_sphere();
-        return 0.5 * color(Ray{a: rec.p, b: target - rec.p}, world);
+        let (b, att, scattered) = rec.mat.scatter(&r, &rec);
+
+        if (depth < 50 && b) {
+            let col = color(scattered, world, depth + 1);
+            return Vector3::new(att[0] * col[0], att[1] * col[1], att[2] * col[2]);
+
+        } else {
+            return Vector3::new(0.0, 0.0, 0.0);
+        }
     } else {
         let unit_direction = na::normalize(r.direction());
         let t: f32 = 0.5 * (unit_direction[1] + 1.0);
@@ -191,7 +207,7 @@ fn color(r: Ray, world: &Vec<Sphere>) -> Vector3<f32> {
 fn main() {
     const NX: u32 = 320;
     const NY: u32 = 240;
-    const NS: u32 = 100;
+    const NS: u32 = 50;
 
     let mut rng = rand::thread_rng();
 
@@ -209,7 +225,7 @@ fn main() {
         lower_left_corner: Vector3::new(-2.0, -1.0, -1.0),
         horizontal: Vector3::new(4.0, 0.0, 0.0),
         vertical: Vector3::new(0.0, 3.0, 0.0),
-        origin: Vector3::new(0.0, 0.0, 0.0)
+        origin: Vector3::new(0.0, 0.0, 1.0)
     };
 
     let s0 = Sphere {
@@ -217,7 +233,8 @@ fn main() {
         radius: 0.5,
         mat: Material {
             t: MaterialType::LAMBERTIAN,
-            albedo: Vector3::new(0.0, 0.0, 0.0)
+            albedo: Vector3::new(0.8, 0.3, 0.3),
+            fuzz: 0.0
         }
     };
 
@@ -226,13 +243,36 @@ fn main() {
         radius: 100.0,
         mat: Material {
             t: MaterialType::LAMBERTIAN,
-            albedo: Vector3::new(0.0, 0.0, 0.0)
+            albedo: Vector3::new(0.8, 0.8, 0.0),
+            fuzz: 0.0
+        }
+    };
+
+    let s2 = Sphere {
+        center: Vector3::new(1.0, 0.0, -1.0),
+        radius: 0.5,
+        mat: Material {
+            t: MaterialType::METAL,
+            albedo: Vector3::new(0.8, 0.6, 0.2),
+            fuzz: 0.3
+        }
+    };
+
+    let s3 = Sphere {
+        center: Vector3::new(-1.0, 0.0, -1.0),
+        radius: 0.5,
+        mat: Material {
+            t: MaterialType::METAL,
+            albedo: Vector3::new(0.8, 0.8, 0.8),
+            fuzz: 0.1
         }
     };
 
     let mut world: Vec<Sphere> = Vec::new();
     world.push(s0);
     world.push(s1);
+    world.push(s2);
+    world.push(s3);
 
     for j in 0..(NY - 1) {
         let rj = (NY - 1) - j;
@@ -249,7 +289,7 @@ fn main() {
 
                 let p = r.point_at_parameter(2.0);
 
-                col += color(r, &world);
+                col += color(r, &world, 0);
             }
 
             col /= (NS as f32);
